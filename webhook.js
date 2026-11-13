@@ -1,22 +1,38 @@
+
 import axios from 'axios';
 import { waitUntil } from '@vercel/functions';
 
-// ====== Environment Variables ======
+// ===== ENVIRONMENT VARIABLES =====
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
-// ====== সেটিংস ======
-const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
-const MAIN_MODEL = 'gemini-3.8-flash';
-const SYSTEM_PROMPT = 'তুমি একজন বন্ধুত্বপূর্ণ ও সহায়ক বাংলা চ্যাটবট। সংক্ষেপে, স্পষ্টভাবে এবং বাংলায় উত্তর দাও। ইমোজি ব্যবহার করতে পারো।';
-const SORRY_MESSAGE = 'দুঃখিত 😔 এই মুহূর্তে উত্তর দিতে পারছি না। একটু পরে আবার চেষ্টা করুন।';
+// ===== GEMINI SETTINGS =====
+const GEMINI_URL =
+  'https://generativelanguage.googleapis.com/v1beta/models';
 
-// ====== মূল হ্যান্ডলার ======
+const MAIN_MODEL = 'gemini-3.8-flash';
+
+// Vercel Environment Variables-এ চাইলে সেট করবেন
+const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || '';
+
+const SYSTEM_PROMPT =
+  'তুমি একজন বন্ধুত্বপূর্ণ ও সহায়ক বাংলা চ্যাটবট। সংক্ষেপে, স্পষ্টভাবে এবং বাংলায় উত্তর দাও। ইমোজি ব্যবহার করতে পারো।';
+
+const SORRY_MESSAGE =
+  'দুঃখিত 😔 এই মুহূর্তে উত্তর দিতে পারছি না। একটু পরে আবার চেষ্টা করুন।';
+
+// ===== CONFIGURATION =====
+const AI_TIMEOUT = 10000;
+const MAX_RETRIES = 2;
+
+// ===== MAIN WEBHOOK =====
 export default async function handler(req, res) {
-  // GET: Webhook Verification
+
+  // GET: WhatsApp Verification
   if (req.method === 'GET') {
+
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
@@ -25,138 +41,215 @@ export default async function handler(req, res) {
       console.log('✅ Webhook verified!');
       return res.status(200).send(challenge);
     }
+
     return res.status(403).send('Forbidden');
   }
 
-  // POST: WhatsApp থেকে আসা মেসেজ
+  // POST: Incoming WhatsApp Message
   if (req.method === 'POST') {
+
+    // দ্রুত WhatsApp-কে response
     res.status(200).send('OK');
-    waitUntil(processMessage(req.body));
+
+    // Background processing
+    waitUntil(
+      processMessage(req.body).catch(error => {
+        console.error('Background Error:', error.message);
+      })
+    );
+
     return;
   }
 
-  res.status(405).send('Method Not Allowed');
+  return res.status(405).send('Method Not Allowed');
 }
 
-// ====== মেসেজ প্রসেস করা ======
+// ===== PROCESS WHATSAPP MESSAGE =====
 async function processMessage(body) {
-  try {
-    if (body?.object !== 'whatsapp_business_account') return;
 
-    const message = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (!message || message.type !== 'text') return;
+  try {
+
+    if (body?.object !== 'whatsapp_business_account') {
+      return;
+    }
+
+    const value = body.entry?.[0]?.changes?.[0]?.value;
+    const message = value?.messages?.[0];
+
+    if (!message || message.type !== 'text') {
+      return;
+    }
 
     const from = message.from;
-    const question = message.text.body;
+    const question = message.text?.body?.trim();
+
+    if (!from || !question) return;
+
     console.log(`📩 ${from}: ${question}`);
 
+    // AI Response
     const reply = await getAIReply(question);
-    console.log(`📤 উত্তর: ${reply.substring(0, 80)}...`);
 
+    console.log(`📤 AI Reply: ${reply.substring(0, 100)}`);
+
+    // WhatsApp Response
     await sendWhatsAppMessage(from, reply);
+
   } catch (error) {
-    console.error('❌ Error:', error.message);
+
+    console.error('❌ Process Error:', error.message);
+
   }
 }
 
-// ====== AI থেকে উত্তর নেওয়া ======
+// ===== GET AI RESPONSE =====
 async function getAIReply(question) {
-  // সব চেষ্টা মিলিয়ে সর্বোচ্চ ৪৫ সেকেন্ড
-  const deadline = Date.now() + 45000;
 
-  // ১. মূল মডেল
-  const firstTry = await askGemini(MAIN_MODEL, question, deadline);
-  if (firstTry) return firstTry;
+  if (!GEMINI_API_KEY) {
+    console.error('GEMINI_API_KEY missing');
+    return SORRY_MESSAGE;
+  }
 
-  // ২. বিকল্প মডেল (না পেলে মূল মডেলেই আরেকবার)
-  const others = await findOtherModels();
-  const queue = others.length > 0 ? others : [MAIN_MODEL];
+  const models = [MAIN_MODEL];
 
-  for (const model of queue) {
-    const reply = await askGemini(model, question, deadline);
-    if (reply) return reply;
+  if (FALLBACK_MODEL && FALLBACK_MODEL !== MAIN_MODEL) {
+    models.push(FALLBACK_MODEL);
+  }
+
+  for (const model of models) {
+
+    console.log(`🤖 Trying model: ${model}`);
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+
+      const result = await askGemini(model, question);
+
+      if (result.success) {
+        console.log(`✅ AI Success: ${model}`);
+        return result.text;
+      }
+
+      const status = result.status;
+
+      console.error(
+        `AI Error | Model: ${model} | Attempt: ${attempt + 1} | Status: ${status}`
+      );
+
+      // Retry only temporary errors
+      const temporaryErrors = [429, 500, 502, 503, 504];
+
+      if (!temporaryErrors.includes(status)) {
+        break;
+      }
+
+      // Maximum 2 retries
+      if (attempt < MAX_RETRIES) {
+
+        const delay = 1000 * Math.pow(2, attempt);
+
+        console.log(`⏳ Retrying after ${delay}ms`);
+
+        await sleep(delay);
+      }
+    }
   }
 
   return SORRY_MESSAGE;
 }
 
-// ====== একটি মডেলকে প্রশ্ন করা ======
-async function askGemini(model, question, deadline) {
-  const timeLeft = deadline - Date.now();
-  if (timeLeft < 3000) return null;
+// ===== GEMINI API REQUEST =====
+async function askGemini(model, question) {
 
   try {
+
     const response = await axios.post(
-      `${GEMINI_URL}/${model}:generateContent?key=${GEMINI_API_KEY}`,
+      `${GEMINI_URL}/${model}:generateContent`,
       {
-        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: [{ role: 'user', parts: [{ text: question }] }]
+        system_instruction: {
+          parts: [{ text: SYSTEM_PROMPT }]
+        },
+
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: question }]
+          }
+        ],
+
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 800
+        }
       },
-      { timeout: Math.min(15000, timeLeft) }
+      {
+        params: {
+          key: GEMINI_API_KEY
+        },
+        timeout: AI_TIMEOUT
+      }
     );
 
-    const parts = response.data?.candidates?.[0]?.content?.parts || [];
-    const text = parts
-      .filter((part) => part.text && !part.thought)
-      .map((part) => part.text)
+    const parts =
+      response.data?.candidates?.[0]?.content?.parts || [];
+
+    const reply = parts
+      .filter(part => part.text && !part.thought)
+      .map(part => part.text)
       .join('')
       .trim();
 
-    if (text) {
-      console.log(`🤖 মডেল: ${model}`);
-      return text;
+    if (!reply) {
+      console.error(
+        'Gemini returned empty response:',
+        response.data?.candidates?.[0]?.finishReason
+      );
+
+      return {
+        success: false,
+        status: 500
+      };
     }
 
-    console.error(`AI Error (${model}): খালি উত্তর`);
-    return null;
-  } catch (error) {
-    console.error(`AI Error (${model}):`, error.response?.data || error.message);
-    return null;
-  }
-}
+    return {
+      success: true,
+      text: reply
+    };
 
-// ====== বিকল্প মডেল খোঁজা ======
-async function findOtherModels() {
-  try {
-    const response = await axios.get(
-      `${GEMINI_URL}?pageSize=1000&key=${GEMINI_API_KEY}`,
-      { timeout: 5000 }
+  } catch (error) {
+
+    const status = error.response?.status || 0;
+
+    console.error(
+      `Gemini API Error (${model}):`,
+      error.response?.data || error.message
     );
 
-    const notForChat = /image|tts|audio|live|embed|computer|robotics|latest|-\d{3}$/;
-    const rank = (name) =>
-      (/preview|exp/.test(name) ? 2 : 0) + (name.includes('lite') ? 0 : 1);
-
-    const names = (response.data?.models || [])
-      .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
-      .map((m) => m.name.replace('models/', ''))
-      .filter((name) =>
-        name.startsWith('gemini-') &&
-        name.includes('flash') &&
-        name !== MAIN_MODEL &&
-        !notForChat.test(name)
-      )
-      .sort((a, b) => rank(a) - rank(b) || b.localeCompare(a, undefined, { numeric: true }))
-      .slice(0, 4);
-
-    console.log(`🔁 বিকল্প মডেল: ${names.join(', ') || 'পাওয়া যায়নি'}`);
-    return names;
-  } catch (error) {
-    console.error('Model list error:', error.response?.data || error.message);
-    return [];
+    return {
+      success: false,
+      status
+    };
   }
 }
 
-// ====== WhatsApp-এ মেসেজ পাঠানো ======
+// ===== SEND WHATSAPP MESSAGE =====
 async function sendWhatsAppMessage(to, message) {
+
+  if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
+    console.error('WhatsApp credentials missing');
+    return;
+  }
+
   try {
+
     await axios.post(
       `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: 'whatsapp',
-        to: to,
+        to,
         type: 'text',
-        text: { body: message.slice(0, 4000) }
+        text: {
+          body: message.slice(0, 4000)
+        }
       },
       {
         headers: {
@@ -166,8 +259,20 @@ async function sendWhatsAppMessage(to, message) {
         timeout: 10000
       }
     );
-    console.log('✅ WhatsApp-এ উত্তর পাঠানো হয়েছে');
+
+    console.log('✅ WhatsApp message sent');
+
   } catch (error) {
-    console.error('WhatsApp Error:', error.response?.data || error.message);
+
+    console.error(
+      'WhatsApp API Error:',
+      error.response?.data || error.message
+    );
+
   }
+}
+
+// ===== DELAY FUNCTION =====
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
