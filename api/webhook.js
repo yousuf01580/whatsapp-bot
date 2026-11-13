@@ -67,7 +67,7 @@ async function processMessage(body) {
 async function getAIReply(question) {
   try {
     const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
         system_instruction: {
           parts: [{
