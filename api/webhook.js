@@ -9,7 +9,7 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
 // ====== সেটিংস ======
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
-const MAIN_MODEL = 'gemini-3.8-flash';
+const MAIN_MODEL = 'gemini-3.5-flash-lite';
 const SYSTEM_PROMPT = 'তুমি একজন বন্ধুত্বপূর্ণ ও সহায়ক বাংলা চ্যাটবট। সংক্ষেপে, স্পষ্টভাবে এবং বাংলায় উত্তর দাও। ইমোজি ব্যবহার করতে পারো।';
 const SORRY_MESSAGE = 'দুঃখিত 😔 এই মুহূর্তে উত্তর দিতে পারছি না। একটু পরে আবার চেষ্টা করুন।';
 
