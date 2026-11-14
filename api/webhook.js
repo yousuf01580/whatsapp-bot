@@ -65,7 +65,7 @@ async function processMessage(body) {
 async function getAIReply(question) {
   try {
     const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
         contents: [{
           parts: [{ text: `তুমি একজন বাংলা সহকারী। সংক্ষেপে উত্তর দাও: ${question}` }]
